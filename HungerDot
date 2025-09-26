@@ -1,0 +1,286 @@
+#include <LiquidCrystal.h>
+#include "IRremote.h"
+
+//set up the pins for the joystick, the IRremote and the LCD screen
+const int SW_pin = 2;
+const int backLightPin = 3;
+const int X_pin = A0;
+const int Y_pin = A1;
+const int remote = 5;
+IRrecv irrecv(remote);
+LiquidCrystal lcd (7,8,9,10,11,12);
+
+//the screen is turned off initially
+bool backLightState = false;
+
+//save the raw data collected by the IRremote from last time, can be repeatedly used when there is no new signal
+uint32_t last_decodedRawData = 0;
+unsigned int x_value = 0;
+unsigned int y_value = 0;
+
+//initial cursor position in LCD screen
+unsigned int cursor_x = 0;
+unsigned int cursor_y = 0;
+
+//The middle value(centre) for joystick(based on the serial output when testing)
+const unsigned int joystick_x = 517;
+const unsigned int joystick_y = 514;
+
+//used for screen output covering(cover the previous location of the dot by " ", and print "." at the new location, to achieve the movement of the dot on the screen)
+unsigned int cursor_xtemp = 0;
+unsigned int cursor_ytemp = 0;
+
+unsigned long prev_millis = 0;
+
+//food is generated once evrey 1.2s
+const unsigned long interval1 = 1200;
+
+//the maximum starving time is 5s(or the dot dies)
+const unsigned long interval2 = 5000;
+
+unsigned long millis_now = 0;
+unsigned long last_food_time = 0;
+bool game_over = false;
+double survival_time = 0;
+
+//the maximum number of food is 5
+const int max_food = 5;
+int food_x[max_food];
+int food_y[max_food];
+int food_count = 0;
+
+//Initiate the main variables for the game
+void resetGame(){
+        food_count = 0;
+        game_over = false;
+        cursor_x = 0;
+        cursor_y = 0;
+        cursor_xtemp = 0;
+        cursor_ytemp = 0;
+        
+        lcd.setCursor(cursor_x,cursor_y);
+        lcd.print(".");
+       
+        //starting time of the game
+        millis_now = millis();
+
+        //the time when the dot last gets food
+        last_food_time = millis();
+
+        //the time that the dot survives
+        survival_time = millis();
+}
+
+//count down before the game starts to give the player some buffer time. Used millis() instead of delay() for counting down without blocking the program, which enables this program to provide a more accurate survival time when the game is over)
+void countDown(){
+  unsigned long start_millis = millis();
+  int count = 3;
+  while(count >= 0){
+    if(millis() - start_millis >= 1000){
+      lcd.clear();
+      lcd.print(count);
+      count--;
+      start_millis = millis();
+    }
+  }
+ 
+  lcd.clear();
+  lcd.print("GO!");
+
+  //use delay() to avoid "GO" being covered by the dot 
+  delay(1000);
+  lcd.clear();
+}
+
+/*IRremote control LCD on and off and initiate the game if turned on.
+ Takes action based on IR code received.*/
+void translateIR() 
+{
+  // Check if it is a repeat IR code 
+  if (irrecv.decodedIRData.flags)
+  {
+    //set the current decodedRawData to the last decodedRawData 
+    irrecv.decodedIRData.decodedRawData = last_decodedRawData;
+
+    //tell us to try again if no new signal is collected
+    Serial.println("REPEAT!");
+  } else
+  {
+    //output the IR code on the serial monitor
+    Serial.print("IR code:0x");
+
+    //use hexadecimal because the usual decoded data for IRremote in text is in hex, convenient to compair.
+    Serial.println(irrecv.decodedIRData.decodedRawData, HEX);
+  }
+
+  //trun on the LCD screen
+    if(irrecv.decodedIRData.decodedRawData == 0xBA45FF00){
+      Serial.println("POWER");
+      backLightState = !backLightState;
+      lcd.setCursor(0,0);
+      if(digitalRead(backLightPin)  == LOW){
+        digitalWrite(backLightPin, backLightState ? HIGH : LOW);
+
+        //clear the screen first to avoid potential conflict with our next output on the screen
+        lcd.clear();
+
+        //Welcome message for players
+        lcd.print("Welcome to ");
+        lcd.setCursor(0,1);
+        lcd.print("HUNGERDOT!");
+        delay(3000);
+
+        //countdown to start game 
+        countDown();
+
+        //Initiate the main variables for the game to avoid unexpected behaviours
+        resetGame();
+      }
+
+      //turn off the LCD screen
+      else{
+        lcd.clear();
+        lcd.print("Bye!");
+        delay(2000);
+        digitalWrite(backLightPin, backLightState ? HIGH : LOW);
+      }   
+    }
+
+    //restart the game by pressing "0" on IRremoe
+    if(irrecv.decodedIRData.decodedRawData == 0xE916FF00){
+       game_over = false;
+       
+       //count down before the game starts
+       countDown();
+
+       //Initiate the main variables for the game to avoid unexpected behaviours
+       resetGame();
+    
+    }
+    
+    last_decodedRawData = irrecv.decodedIRData.decodedRawData;
+    delay(500);
+  }
+
+
+// joystick controlling the movement of the player(dot)
+void movement(){
+  millis_now = millis();
+
+ //analog and record the position of the joystick
+  x_value = analogRead(X_pin);
+  //Serial.println("y axis: ");
+  //Serial.println(analogRead(Y_pin));
+  y_value = analogRead(Y_pin);
+
+  
+  //move the dot horizontally(The LCD screen used has a size of 2*16.)
+  if(cursor_x >= 0 && cursor_x <= 15){
+    cursor_xtemp = cursor_x;
+    if(cursor_x != 15 && x_value > joystick_x){
+      cursor_x ++;
+    }
+    else if(cursor_x != 0 && x_value < joystick_x){
+      cursor_x --;
+    }  
+    else if(cursor_x == 0 && x_value < joystick_x){
+    cursor_x = 0;
+    }
+  else if(cursor_x == 15 && x_value > joystick_x){
+    cursor_x = 15;
+  } 
+  }
+
+  //use delay() instead of mills() to avoid uncontrolable movement of the dot
+    //cover the previous location of the dot
+    lcd.setCursor(cursor_xtemp,cursor_ytemp);
+    lcd.print(" ");
+    
+    //print the new location of the dot
+    lcd.setCursor(cursor_x, cursor_y);
+    lcd.print(".");
+    delay(500);
+    
+  //move the dot vertically
+  if(cursor_y >=0 && cursor_y <= 1 ){
+    cursor_ytemp = cursor_y;
+    if(y_value > joystick_y){
+      cursor_y = 1;
+    }
+    else if(y_value < joystick_y){
+       cursor_y = 0;
+    }
+  }
+
+  //generate a new food at random location after a certain time interval
+  if(food_count < max_food && game_over == false && millis_now - prev_millis >= interval1){
+    food_x[food_count] = random(0,16);
+    food_y[food_count] = random(0,2);
+    lcd.setCursor(food_x[food_count], food_y[food_count]);
+    lcd.print("X");
+    food_count++;
+    Serial.print(food_count);
+    prev_millis = millis_now;
+  }
+
+
+  //as long as the player had food within the certain interval(5s), they can stay alive.
+  for(int i = 0; i < food_count;i++){
+     if(cursor_x == food_x[i] && cursor_y == food_y[i]){
+      last_food_time = millis_now;
+      for(int j = i; j < food_count - 1; j++){
+        food_x[j] = food_x[j+1];
+        food_y[j] = food_y[j+1];
+      }
+    food_count--;
+    break;
+    }
+  }
+
+  //if the dot didn't get food within 5s, it dies and the game is over
+  if(millis_now - last_food_time >= interval2){
+    game_over = true;
+    lcd.clear();
+    lcd.print("You Starved:(");
+    lcd.setCursor(0,1);
+    lcd.print("ST:");
+    lcd.print((millis() - survival_time)/1000);
+    lcd.print("s");
+
+    //tells player that they can restart the game by pressing "0" on the IRremote
+    lcd.print(" RE:0");
+  }
+ 
+}
+
+void setup(){
+  //Initiate the serial, the IRremote, and the pins connected to the LCD screen and the joystick 
+  Serial.begin(9600);
+  pinMode(backLightPin, OUTPUT);
+  digitalWrite(backLightPin, LOW);
+  irrecv.enableIRIn();
+  pinMode(SW_pin, INPUT);
+  digitalWrite(SW_pin,HIGH);
+  lcd.begin(16,2);
+  
+  //hide the cursor for better user experience
+  lcd.noCursor();
+}
+
+
+void loop() {
+  //if signal received, decode it and handle the corresponding action(turn of/off the backscreen, or restart the game)
+    if(irrecv.decode()){
+       translateIR();
+       irrecv.resume();
+    }
+
+    //when game is still ongoing, move the dot by the player-controlled joystick
+    if(game_over == false){
+      movement();
+    }
+}   
+   
+
+
+    
